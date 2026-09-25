@@ -92,22 +92,51 @@ function applyAnswers(dt){
     else g.pb.push([g.px,H-46,0]);
     g.fireCd=g.buff>0?FIRE_CD*0.5:FIRE_CD; } };
 
-  // 门控:客观存在即将命中的子弹(40px 内且 1.2s 内到线)
+  // 门控:即将命中的子弹(40px 内且 1.2s 内到线)+ 近距敌机(预测撞击点 40px 内且 0.9s 内到线)
   let threat=null;
   for(const b of g.eb){
     if(b[1]>=H-40) continue;
     const tImp=(H-40-b[1])/b[2], gap=Math.abs(b[0]-g.px);
-    if(gap<40 && tImp<1.2 && (threat===null||tImp<threat.t)) threat={t:tImp,b};
+    if(gap<40 && tImp<1.2 && (threat===null||tImp<threat.t)) threat={t:tImp,b,lane:b[0]};
+  }
+  for(const e of g.enemies){
+    const tImp=(H-40-e[1])/e[2], vx=e[3]||0;
+    const xPred=Math.max(16,Math.min(W-16,e[0]+vx*tImp));
+    const gap=Math.abs(xPred-g.px);
+    if(gap<40 && tImp>0 && tImp<0.9 && (threat===null||tImp<threat.t)) threat={t:tImp,b:e,lane:xPred};
   }
   if(threat){
-    const b=threat.b, gap=g.px-b[0];
+    const b=threat.b, lane=threat.lane, gap=g.px-lane;      // >0: 威胁在左
+    const corridorCost=cx=>{
+      let c=0;
+      const obs=[...g.eb.filter(x=>x!==b).map(x=>({x:x[0],y:x[1],vy:x[2],r:14})),
+                 ...g.enemies.filter(x=>x!==b).map(e=>({x:Math.max(16,Math.min(W-16,e[0]+(e[3]||0)*((H-40-e[1])/e[2]))),y:e[1],vy:e[2],r:33}))];
+      for(const o of obs){
+        if(o.y>=H-40) continue;
+        const tImp=(H-40-o.y)/o.vy, tReach=Math.abs(cx-g.px)/PSPEED;
+        if(Math.min(g.px,cx)<=o.x&&o.x<=Math.max(g.px,cx)){
+          if(Math.abs(tImp-Math.abs(o.x-g.px)/PSPEED)<0.35) c++;
+        } else if(Math.abs(o.x-cx)<o.r&&tImp<tReach+0.6) c++;
+      }
+      return c;
+    };
     const side=a.bullet_side&&a.bullet_side.choice;
-    const layaLeft=(side==='left'), realLeft=b[0]<g.px;
+    const layaLeft=(side==='left'), realLeft=lane<g.px;
     let dir;
-    if(Math.abs(gap)<8){ const d=a.dodge_dir&&a.dodge_dir.choice; dir = d==='right'?1:-1; }
+    if(Math.abs(gap)<8){ const d=a.dodge_dir&&a.dodge_dir.choice; dir = d==='right'?1:-1;
+      if(corridorCost(g.px+dir*90)>corridorCost(g.px-dir*90)) dir=-dir; }
     else if(layaLeft===realLeft) dir = layaLeft?1:-1;   // Laya 判断与事实一致
     else dir = realLeft?1:-1;                            // 矛盾时按事实纠正
-    const target=Math.max(16,Math.min(W-16,g.px+dir*90));
+    // 候选落点按代价评分(含横穿选项),取最小代价;平手取更近的
+    const cands=[60,110,160,210].map(dd=>{
+      const cx=Math.max(16,Math.min(W-16,g.px+dir*dd));
+      return {c:corridorCost(cx)+(Math.abs(cx-lane)<40?1:0), d:dd, cx};
+    });
+    const cross=Math.max(16,Math.min(W-16,lane-dir*60));
+    if(threat.t>Math.abs(lane-g.px)/PSPEED+0.3)
+      cands.push({c:corridorCost(cross)+1, d:Math.abs(cross-g.px), cx:cross});
+    cands.sort((x,y)=>x.c-y.c||x.d-y.d);
+    const target=cands[0].cx;
     if(Math.abs(target-g.px)>4) g.px=Math.max(16,Math.min(W-16,g.px+Math.sign(target-g.px)*PSPEED*dt));
     fire();
     return;

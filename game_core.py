@@ -140,20 +140,58 @@ class Game:
             gap = abs(b[0] - self.px)
             if gap < 40 and t_imp < 1.2 and (threat is None or t_imp < threat[0]):
                 threat = (t_imp, b)
+        # 近距敌机与子弹同规则:0.9s 内会压到防线的敌机也是"必须躲开"的威胁
+        # (蛇形机用漂移预测撞击点;预测位置也写回,供闪避方向计算使用)
+        for e in self.enemies:
+            t_imp = (H - 40 - e[1]) / e[2]
+            vx = e[3] if len(e) > 3 else 0
+            x_pred = max(16, min(W - 16, e[0] + vx * t_imp))
+            gap = abs(x_pred - self.px)
+            if gap < 40 and 0 < t_imp < 0.9 and (threat is None or t_imp < threat[0]):
+                if len(e) > 3: e[0] = x_pred
+                threat = (t_imp, e)
         if threat is not None:
             b = threat[1]
             side = a.get("bullet_side", {}).get("choice")
             laya_thinks_left = (side == "left")
             real_left = b[0] < self.px
             gap = self.px - b[0]
+            def corridor_cost(cx, exclude):
+                """候选站位代价:路径/终点上会撞上的子弹与敌机数(漂移预测)"""
+                cost = 0
+                obs = [(x, x[2], 0, 14) for x in self.ebullets if x is not exclude]
+                obs += [(e, e[2], (e[3] if len(e) > 3 else 0), 22) for e in self.enemies if e is not exclude]
+                for x, vy, vx, r in obs:
+                    if x[1] >= H - 40:
+                        continue
+                    t_imp = (H - 40 - x[1]) / vy
+                    if t_imp <= 0:
+                        continue
+                    x_at = max(16, min(W - 16, x[0] + vx * t_imp))
+                    t_reach = abs(cx - self.px) / PLAYER_SPEED
+                    lo, hi = min(self.px, cx), max(self.px, cx)
+                    if lo <= x_at <= hi and abs(t_imp - abs(x_at - self.px) / PLAYER_SPEED) < 0.35:
+                        cost += 1
+                    elif abs(x_at - cx) < r + 11 and t_imp < t_reach + 0.6:
+                        cost += 1
+                return cost
             if abs(gap) < 8:                                 # 弹道正对头顶:Laya 裁决走廊
                 d = a.get("dodge_dir", {}).get("choice")
                 direction = 1 if d == "right" else -1
+                if corridor_cost(self.px + direction * 90, b) > corridor_cost(self.px - direction * 90, b):
+                    direction = -direction
             elif laya_thinks_left == real_left:              # Laya 判断与事实一致 => 用 Laya 的方向
                 direction = 1 if laya_thinks_left else -1    # 远离它所说的那侧
             else:                                            # Laya 看错了侧:按事实远离
                 direction = 1 if real_left else -1
-            target = max(16, min(W - 16, self.px + direction * 90))
+            # 候选落点按代价评分(含横穿选项),取最小代价;平手取更近的
+            cands = [(corridor_cost(max(16, min(W - 16, self.px + direction * dd)), b),
+                      abs(direction * dd), max(16, min(W - 16, self.px + direction * dd)))
+                     for dd in (60, 110, 160, 210)]
+            cx = max(16, min(W - 16, b[0] - direction * 60))  # 横穿选项(要求子弹还远)
+            if threat[0] > abs(b[0] - self.px) / PLAYER_SPEED + 0.3:
+                cands.append((corridor_cost(cx, b) + 1, abs(cx - self.px), cx))
+            target = min(cands)[2]
         else:
             e = max(self.enemies, key=lambda x: x[1]) if self.enemies else None
             side = a.get("enemy_side", {}).get("choice")
