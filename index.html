@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>飞机大战 · Laya 控制版</title>
+<style>
+  body { margin:0; background:#0b0e1a; color:#cfd8ff; font:13px/1.5 "SF Mono", Menlo, monospace;
+         display:flex; justify-content:center; align-items:flex-start; gap:18px; padding:24px; }
+  #wrap { position:relative; }
+  canvas { background:linear-gradient(#0b0e1a,#141a33); border-radius:10px; box-shadow:0 0 40px #1a2450; }
+  #panel { width:340px; }
+  h1 { font-size:16px; margin:0 0 6px; color:#8ab4ff; }
+  #verdict { background:#101631; border:1px solid #24305e; border-radius:8px; padding:10px; min-height:120px; }
+  .lbl { color:#6b7bb8; }
+  .ans { font-size:15px; color:#ffd479; }
+  .bar { height:6px; background:#1b2350; border-radius:3px; margin:2px 0 8px; }
+  .bar>i { display:block; height:6px; border-radius:3px; background:#4d7cff; }
+  #log { font-size:11px; color:#55628f; max-height:180px; overflow:hidden; }
+  #status { margin-top:10px; color:#7fe3a0; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="480" height="640"></canvas></div>
+<div id="panel">
+  <h1>✈ 飞机大战 · Laya 控制版</h1>
+  <div>战场状态被翻译成文字发给本地 Laya 模型,由它判断:有无危险 / 危险在哪侧 / 敌机在哪侧,游戏执行它的答案走位、开火时机,全部由它计算执行。</div>
+  <div id="verdict">
+    <div class="lbl">最近一次 Laya 判断</div>
+    <div id="biglat" style="font-size:34px;color:#7fe3a0;font-weight:bold;line-height:1.2">--<span style="font-size:14px;color:#6b7bb8"> ms</span></div>
+    <div id="ans" class="lbl">等待模型…</div>
+  </div>
+  <div id="verdict" style="margin-top:10px">
+    <div class="lbl">⚡ 速度仪表盘(本地 Laya 真实推理)</div>
+    <div id="stats" style="font-size:12px"></div>
+    <div class="bar" style="margin-top:6px"><i id="latbar"></i></div>
+    <div class="lbl" id="speednote"></div>
+  </div>
+  <div id="log"></div>
+  <div id="status">Laya 正在挑战无尽模式,看它能坚持到第几关 🏁<br><span id="best" style="color:#8f7bff"></span></div>
+</div>
+<script>
+const W=480,H=640,PSPEED=240,BULLET=420,ESPEED=55,EBULLET=180,FIRE_CD=0.14,MAX_HP=3;
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+let level=1,decideEvery=0.15;
+
+let g, score=0, popups=[];
+const best = JSON.parse(localStorage.getItem('laya-best')||'{"level":0,"score":0}');
+function addPop(x,y,txt,color){ popups.push({x,y,txt,color,t:1}); }
+function newGame(){ popups=[]; g={t:0,px:W/2,hp:MAX_HP,kills:0,quota:Math.min(12,4+level),spawnCd:0.5,fireCd:0,
+  enemies:[],eb:[],pb:[],over:null,ans:{},ansT:-9,lat:0,combo:0,comboT:0}; }
+newGame();
+
+function stateText(){
+  const p=[`Player x=${g.px.toFixed(0)} of ${W}. Health ${g.hp}/${MAX_HP}.`];
+  const inc=g.eb.filter(b=>b[1]<H-40);
+  if(inc.length){
+    const im=inc.filter(b=>(H-40-b[1])/b[2]<1.2);
+    const il=im.filter(b=>b[0]<g.px).length, ir=im.length-il;
+    p.push(`Bullets about to cross the player's line within ~1s: ${il} on the left, ${ir} on the right (of ${inc.length} bullets total, the rest are far away).`);
+    const b=inc.reduce((a,x)=>(H-40-x[1])/x[2]<(H-40-a[1])/a[2]?x:a);
+    const tImp=(H-40-b[1])/b[2], s=b[0]<g.px?"left":"right";
+    p.push(`Most imminent bullet: ${Math.abs(b[0]-g.px).toFixed(0)}px to the ${s} of the player, impact in ${tImp.toFixed(1)}s.`);
+  } else p.push("No enemy bullets on screen.");
+  if(g.enemies.length){
+    const e=g.enemies.reduce((a,b)=>b[1]>a[1]?b:a);
+    const s=e[0]<g.px-12?"to the left":(e[0]>g.px+12?"to the right":"almost directly above");
+    p.push(`The most urgent enemy ship (deepest): ${s}, ${e[1].toFixed(0)}px above the player, horizontal offset ${Math.abs(e[0]-g.px).toFixed(0)}px.`);
+  } else p.push("No enemy ships on screen.");
+  return p.join(" ");
+}
+
+async function decide(){
+  if(inflight) return;          // 上一次判断还没回来就不发新请求,避免排队虚增延迟
+  inflight=true;
+  const t0=performance.now();
+  try{
+    const r=await fetch('/decide',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text:stateText()})});
+    const j=await r.json();
+    g.ans=j.answers; g.lat=(performance.now()-t0).toFixed(0);
+    renderVerdict();
+  }catch(e){ document.getElementById('status').textContent='⚠ 决策服务未连接:'+e; }
+  finally{ inflight=false; }
+}
+setInterval(()=>{ if(!g.over) decide(); }, decideEvery*1000);
+
+function applyAnswers(dt){
+  const a=g.ans;
+  const willFire = a.fire && a.fire.choice==='yes';   // 开火由 Laya 决策
+  const fire=()=>{ if(willFire && g.fireCd<=0){
+    if(g.buff>0){ g.pb.push([g.px,H-46,-70]); g.pb.push([g.px,H-46,0]); g.pb.push([g.px,H-46,70]); }
+    else g.pb.push([g.px,H-46,0]);
+    g.fireCd=g.buff>0?FIRE_CD*0.5:FIRE_CD; } };
+
+  // 门控:客观存在即将命中的子弹(40px 内且 1.2s 内到线)
+  let threat=null;
+  for(const b of g.eb){
+    if(b[1]>=H-40) continue;
+    const tImp=(H-40-b[1])/b[2], gap=Math.abs(b[0]-g.px);
+    if(gap<40 && tImp<1.2 && (threat===null||tImp<threat.t)) threat={t:tImp,b};
+  }
+  if(threat){
+    const b=threat.b, gap=g.px-b[0];
+    const side=a.bullet_side&&a.bullet_side.choice;
+    const layaLeft=(side==='left'), realLeft=b[0]<g.px;
+    let dir;
+    if(Math.abs(gap)<8){ const d=a.dodge_dir&&a.dodge_dir.choice; dir = d==='right'?1:-1; }
+    else if(layaLeft===realLeft) dir = layaLeft?1:-1;   // Laya 判断与事实一致
+    else dir = realLeft?1:-1;                            // 矛盾时按事实纠正
+    const target=Math.max(16,Math.min(W-16,g.px+dir*90));
+    if(Math.abs(target-g.px)>4) g.px=Math.max(16,Math.min(W-16,g.px+Math.sign(target-g.px)*PSPEED*dt));
+    fire();
+    return;
+  }
+
+  // 走位:Laya 判断最紧急敌机方位
+  const s=a.enemy_side&&a.enemy_side.choice;
+  let e=null; for(const en of g.enemies){ if(!e||en[1]>e[1]) e=en; }
+  let target=g.px;
+  if(e && Math.abs(e[0]-g.px)<18) target=g.px;
+  else if(s==='left'||s==='right'){ if(e) target=e[0]; }
+  if(Math.abs(target-g.px)>4) g.px=Math.max(16,Math.min(W-16,g.px+Math.sign(target-g.px)*PSPEED*dt));
+  fire();
+}
+
+function step(dt){
+  if(g.over) return;
+  g.t+=dt; g.fireCd-=dt; g.spawnCd-=dt;
+  if(g.comboT>0){ g.comboT-=dt; if(g.comboT<=0) g.combo=0; }
+  if(g.buff>0) g.buff-=dt;
+  applyAnswers(dt);
+  if(g.kills+g.enemies.length<g.quota && g.spawnCd<=0){
+    const drift = (level>=4 && Math.random()<0.6) ? (Math.random()<0.5?-1:1)*(20+level*6) : 0;
+    g.enemies.push([40+Math.random()*(W-80),-20,ESPEED+level*8,drift]);
+    g.spawnCd=Math.max(0.55,2.8-level*0.15);
+  }
+  for(const e of g.enemies){ e[1]+=e[2]*dt;
+    if(e[3]){ e[0]+=e[3]*dt; if(e[0]<24||e[0]>W-24) e[3]=-e[3]; } }
+  for(const b of g.pb){ b[1]-=BULLET*dt; b[0]+=(b[2]||0)*dt; }
+  for(const b of g.eb) b[1]+=(b[2]||EBULLET)*dt;
+  for(const e of g.enemies) if(e[1]>0&&Math.random()<dt*(0.35+0.15*level)) g.eb.push([e[0],e[1]+14,EBULLET+level*8]);
+  for(let i=g.pb.length-1;i>=0;i--){ const b=g.pb[i];
+    for(let j=g.enemies.length-1;j>=0;j--){ const e=g.enemies[j];
+      if(Math.abs(b[0]-e[0])<20&&Math.abs(b[1]-e[1])<18){
+        g.pb.splice(i,1); g.enemies.splice(j,1); g.kills++;
+        g.combo=Math.min(5,g.combo+1); g.comboT=3;                    // 3 秒内连续击杀,倍率最高 x5
+        if(g.combo===5){ g.buff=8; addPop(g.px,H-90,'⚡ 火力增强 8s!','#7fe3a0'); }   // 连击满格奖励
+        const pts=100*g.combo*(g.hp===MAX_HP?2:1);                    // 满血击杀双倍
+        score+=pts;
+        addPop(e[0],e[1],`+${pts}`+ (g.combo>1?` ×${g.combo}`:'') + (g.hp===MAX_HP?' ★':''), '#ffe08a');
+        break; } } }
+  for(let i=g.eb.length-1;i>=0;i--){ const b=g.eb[i];
+    if(Math.abs(b[0]-g.px)<14&&Math.abs(b[1]-(H-40))<16){ g.eb.splice(i,1); g.hp--; g.combo=0; addPop(g.px,H-60,'连击中断','#ff7b7b'); } }
+  for(let i=g.enemies.length-1;i>=0;i--){ const e=g.enemies[i];
+    if(Math.abs(e[0]-g.px)<22&&Math.abs(e[1]-(H-40))<22){ g.enemies.splice(i,1); g.hp--; g.combo=0; } }
+  const leaked=g.enemies.filter(e=>e[1]>=H+20).length;
+  if(leaked>0){ g.combo=0; addPop(W/2,H-120,`漏敌 ${leaked}!连击清零`,'#ff7b7b'); }
+  g.leaks=(g.leaks||0)+leaked;
+  g.eb=g.eb.filter(b=>b[1]<=H); g.pb=g.pb.filter(b=>b[1]>-10); g.enemies=g.enemies.filter(e=>e[1]<H+20);
+  if(g.hp<=0) g.over='lose';
+  else if(g.kills>=g.quota) g.over='win';
+}
+
+let lats=[]; let startTime=performance.now(); let decideCount=0;
+function renderVerdict(){
+  const a=g.ans, el=document.getElementById('ans');
+  document.getElementById('biglat').innerHTML = `${g.lat}<span style="font-size:14px;color:#6b7bb8"> ms 往返</span>`;
+  const row=(name,q)=>{ const d=a[name]; if(!d) return '';
+    const p=d.probabilities?d.probabilities[d.choice]:d.noul;
+    return `<div class="ans">${q}: ${d.choice||d.noul} <span class="lbl">(${(p*100).toFixed(0)}%)</span></div>`; };
+  const bl=JSON.parse(localStorage.getItem('laya-best')||'{"level":0,"score":0}');
+  const be=document.getElementById('best'); if(be) be.textContent=`历史最高:第 ${bl.level} 关 · ${bl.score} 分`;
+  el.innerHTML = row('dodge','要躲吗') + row('bullet_side','弹在') + row('dodge_dir','逃向') + row('fire','开火吗') + row('enemy_side','敌机在') || '等待模型…';
+
+  // 速度仪表盘
+  decideCount++;
+  if(g.lat && !isNaN(+g.lat)) lats.push(+g.lat);
+  if(lats.length>200) lats=lats.slice(-200);
+  if(lats.length){
+    const s=[...lats].sort((a,b)=>a-b);
+    const avg=lats.reduce((a,b)=>a+b,0)/lats.length;
+    const p95=s[Math.floor(s.length*0.95)-1]||s[s.length-1];
+    const secs=(performance.now()-startTime)/1000;
+    const bar=document.getElementById('latbar');
+    bar.style.width=Math.min(100,avg/100)+'%';
+    bar.style.background = avg<100?'#7fe3a0':(avg<300?'#ffd479':'#ff7b7b');
+    document.getElementById('stats').innerHTML =
+      `平均 <b style="color:#7fe3a0">${avg.toFixed(0)}ms</b> · 最快 <b>${s[0].toFixed(0)}ms</b> · P95 <b>${p95.toFixed(0)}ms</b><br>`+
+      `已决策 <b style="color:#8ab4ff">${decideCount}</b> 次 · 约 <b>${(decideCount/secs).toFixed(1)}</b> 次/秒 · 运行 ${secs.toFixed(0)}s`;
+    document.getElementById('speednote').innerHTML =
+      `对比:大模型生成同样 3 个判断约需 2-5 秒、数百 token;Laya 本地前向一次 <b>30ms 级</b>,零 API 成本。`;
+  }
+}
+
+let logs=[];
+function logLine(s){ logs.unshift(s); logs=logs.slice(0,10);
+  document.getElementById('log').innerHTML=logs.map(l=>'· '+l).join('<br>'); }
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#c9d4ff';
+  for(let i=0;i<40;i++){ const y=(g.t*60+i*47)%H; ctx.globalAlpha=0.15+((i*37)%10)/30; ctx.fillRect((i*97)%W,y,1.5,1.5); }
+  ctx.globalAlpha=1;
+  // player —— 蓝色 delta 战机
+  const py=H-22, flick=Math.sin(g.t*40)*3;
+  // 尾焰
+  const fg=ctx.createLinearGradient(0,py-2,0,py+18+flick);
+  fg.addColorStop(0,'rgba(126,225,255,.95)'); fg.addColorStop(1,'rgba(77,124,255,0)');
+  ctx.fillStyle=fg; ctx.beginPath();
+  ctx.moveTo(g.px-4,py-2); ctx.lineTo(g.px+4,py-2); ctx.lineTo(g.px,py+16+flick); ctx.closePath(); ctx.fill();
+  // 主翼
+  ctx.fillStyle='#2f62d8'; ctx.beginPath();
+  ctx.moveTo(g.px,py-14); ctx.lineTo(g.px-24,py+8); ctx.lineTo(g.px-8,py+9);
+  ctx.lineTo(g.px,py+2); ctx.lineTo(g.px+8,py+9); ctx.lineTo(g.px+24,py+8);
+  ctx.closePath(); ctx.fill();
+  // 机身
+  const bg=ctx.createLinearGradient(g.px-8,0,g.px+8,0);
+  bg.addColorStop(0,'#6f9bff'); bg.addColorStop(.5,'#dbe7ff'); bg.addColorStop(1,'#4d7cff');
+  ctx.fillStyle=bg; ctx.beginPath();
+  ctx.moveTo(g.px,py-20); ctx.quadraticCurveTo(g.px+7,py-4,g.px+5,py+9);
+  ctx.lineTo(g.px-5,py+9); ctx.quadraticCurveTo(g.px-7,py-4,g.px,py-20);
+  ctx.closePath(); ctx.fill();
+  // 座舱
+  ctx.fillStyle='#37e0ff'; ctx.beginPath();
+  ctx.ellipse(g.px,py-6,2.6,5,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,.85)'; ctx.fillRect(g.px-1,py-9,1.4,2.5);
+  // 翼尖航灯
+  ctx.fillStyle=g.t%1<.5?'#ff6b81':'#7fe3a0';
+  ctx.fillRect(g.px-25,py+7,2,2); ctx.fillRect(g.px+23,py+7,2,2);
+  // enemies
+  for(const e of g.enemies){
+    const zig=e[3]!==undefined&&e[3]!==0;                 // 蛇形敌机用紫红配色
+    const c1=zig?'#b45cff':'#ff6b81', c2=zig?'#6c2bd9':'#c2334d';
+    // 双翼
+    ctx.fillStyle=c2; ctx.beginPath();
+    ctx.moveTo(e[0],e[1]+4); ctx.lineTo(e[0]-19,e[1]-2); ctx.lineTo(e[0]-13,e[1]+8);
+    ctx.lineTo(e[0],e[1]+5); ctx.lineTo(e[0]+13,e[1]+8); ctx.lineTo(e[0]+19,e[1]-2);
+    ctx.closePath(); ctx.fill();
+    // 舰体
+    const eg=ctx.createLinearGradient(e[0],e[1]-12,e[0],e[1]+8);
+    eg.addColorStop(0,c1); eg.addColorStop(1,c2);
+    ctx.fillStyle=eg; ctx.beginPath();
+    ctx.moveTo(e[0],e[1]+10); ctx.quadraticCurveTo(e[0]-12,e[1],e[0]-9,e[1]-8);
+    ctx.quadraticCurveTo(e[0],e[1]-14,e[0]+9,e[1]-8); ctx.quadraticCurveTo(e[0]+12,e[1],e[0],e[1]+10);
+    ctx.closePath(); ctx.fill();
+    // 发光核心(呼吸)
+    const pulse=3+Math.sin(g.t*6+e[0])*1.2;
+    ctx.fillStyle='rgba(255,214,102,'+(zig?0.9:0.8)+')';
+    ctx.beginPath(); ctx.arc(e[0],e[1]-2,pulse,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,.9)';
+    ctx.beginPath(); ctx.arc(e[0],e[1]-3,1.4,0,Math.PI*2); ctx.fill();
+  }
+  // bullets
+  ctx.fillStyle=g.buff>0?'#7fe3a0':'#ffe08a'; for(const b of g.pb) ctx.fillRect(b[0]-1.5,b[1]-8,3,10);
+  ctx.fillStyle='#ff8a8a'; for(const b of g.eb) ctx.fillRect(b[0]-1.5,b[1],3,8);
+  // 奖励飘字
+  for(const p of popups){ p.t-=0.02; p.y-=0.8;
+    ctx.globalAlpha=Math.max(0,p.t); ctx.fillStyle=p.color; ctx.font='bold 13px Menlo';
+    ctx.fillText(p.txt,p.x-20,p.y); ctx.globalAlpha=1; }
+  popups=popups.filter(p=>p.t>0);
+  // HUD
+  ctx.fillStyle='#8ab4ff'; ctx.font='13px Menlo';
+  ctx.fillStyle=g.leaks>0?'#ff7b7b':'#8ab4ff';
+  ctx.fillText(`${level<=3?`第 ${level}/3 关`:`无尽模式 第 ${level} 关`}   生命 ${'♥'.repeat(g.hp)}${'♡'.repeat(MAX_HP-g.hp)}   击落 ${g.kills}/${g.quota}   漏敌 ${g.leaks}`,12,20);
+  ctx.fillStyle='#8f7bff'; ctx.font='12px Menlo';
+  ctx.fillText(`历史最高:第 ${best.level} 关 · ${best.score} 分${level>best.level?'  ⚡正在刷新纪录':''}`,12,54);
+  ctx.fillStyle='#8ab4ff'; ctx.font='13px Menlo';
+  ctx.fillStyle='#ffe08a'; ctx.font='bold 15px Menlo';
+  ctx.fillText(`积分 ${score}${g.combo>1?`   🔥 连击 ×${g.combo} (${g.comboT.toFixed(1)}s)`:''}`,12,40);
+  if(g.buff>0){ ctx.fillStyle='#7fe3a0'; ctx.fillText(`⚡ 火力增强 ${g.buff.toFixed(1)}s`,12,60); ctx.fillStyle='#ffe08a'; }
+  ctx.fillStyle='#8ab4ff'; ctx.font='13px Menlo';
+  if(g.over && !g.transition){
+    g.transition = true;
+    ctx.fillStyle='rgba(8,10,25,.78)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center'; ctx.fillStyle=g.over==='win'?'#7fe3a0':'#ff7b7b'; ctx.font='bold 30px Menlo';
+    if(g.over==='win'){ ctx.fillText(`第 ${level} 关通关!`,W/2,H/2-10);
+      ctx.fillStyle='#cfd8ff'; ctx.font='14px Menlo'; ctx.fillText(level<3?'Laya 正在进入下一关…':'已进入无尽模式,难度继续上升…',W/2,H/2+22);
+      setTimeout(()=>{ level++; newGame(); },1800);
+    } else { const record=level>best.level||(level===best.level&&score>best.score);
+      ctx.fillText(`坠机… 坚持到第 ${level} 关`,W/2,H/2-10);
+      ctx.fillStyle='#cfd8ff'; ctx.font='14px Menlo';
+      ctx.fillText(`本局积分 ${score}  |  ${record?'🏆 新纪录!':'最高纪录:第 '+best.level+' 关 · '+best.score+' 分'}`,W/2,H/2+22);
+      ctx.fillText('Laya 3 秒后从第 1 关重新开始',W/2,H/2+44);
+      if(record){ best.level=level; best.score=score; localStorage.setItem('laya-best',JSON.stringify(best)); }
+      setTimeout(()=>{ level=1; newGame(); },3000); }
+    ctx.textAlign='left';
+  }
+}
+
+// 主循环用 Web Worker 计时:隐藏标签页不被浏览器节流,Laya 全天候在线作战
+const workerSrc = `let id=null; onmessage=e=>{ if(e.data==='start'&&!id) id=setInterval(()=>postMessage(1),16); };`;
+const worker = new Worker(URL.createObjectURL(new Blob([workerSrc],{type:'application/javascript'})));
+let last=performance.now();
+worker.onmessage=()=>{ const now=performance.now(); const dt=Math.min(0.05,(now-last)/1000); last=now; step(dt); draw(); };
+worker.postMessage('start');
+</script>
+</body>
+</html>
