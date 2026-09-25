@@ -290,7 +290,7 @@ function draw(){
   // HUD
   ctx.fillStyle='#8ab4ff'; ctx.font='13px Menlo';
   ctx.fillStyle=g.leaks>0?'#ff7b7b':'#8ab4ff';
-  ctx.fillText(`${level<=3?`第 ${level}/3 关`:`无尽模式 第 ${level} 关`}   生命 ${'♥'.repeat(g.hp)}${'♡'.repeat(MAX_HP-g.hp)}   击落 ${g.kills}/${g.quota}   漏敌 ${g.leaks}`,12,20);
+  ctx.fillText(`第 ${level} 关   生命 ${'♥'.repeat(g.hp)}${'♡'.repeat(MAX_HP-g.hp)}   击落 ${g.kills}/${g.quota}   漏敌 ${g.leaks}`,12,20);
   ctx.fillStyle='#8f7bff'; ctx.font='12px Menlo';
   ctx.fillText(`历史最高:第 ${best.level} 关 · ${best.score} 分${level>best.level?'  ⚡正在刷新纪录':''}`,12,54);
   ctx.fillStyle='#8ab4ff'; ctx.font='13px Menlo';
