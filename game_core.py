@@ -141,7 +141,7 @@ class Game:
             vx = e[3] if len(e) > 3 else 0
             x_pred = max(16, min(W - 16, e[0] + vx * t_imp))
             gap = abs(x_pred - self.px)
-            if gap < 40 and 0 < t_imp < 0.9 and (threat is None or t_imp < threat[0]):
+            if gap < 50 and 0 < t_imp < 1.0 and (threat is None or t_imp < threat[0]):
                 if len(e) > 3: e[0] = x_pred
                 threat = (t_imp, e)
         if threat is not None:
@@ -194,6 +194,15 @@ class Game:
             elif side in ("left", "right") and e:
                 target = e[0]
             else:
+                target = self.px
+            # 护栏:本拍移动会横穿"0.45s 内到线"的子弹或敌机(漂移预测)=> 暂停一拍
+            nxt = self.px + math.copysign(PLAYER_SPEED * dt, target - self.px) if abs(target - self.px) > 4 else self.px
+            lo, hi = min(self.px, nxt) - 12, max(self.px, nxt) + 12
+            blocked = any(abs(b[0] - ((lo + hi) / 2)) < (hi - lo) / 2 + 12 and (H - 40 - b[1]) / b[2] < 0.45
+                          for b in self.ebullets if b[1] < H - 40)
+            blocked |= any(abs(max(16, min(W - 16, x[0] + (x[3] if len(x) > 3 else 0) * ((H - 40 - x[1]) / x[2]))) - ((lo + hi) / 2)) < (hi - lo) / 2 + 22
+                           and 0 < (H - 40 - x[1]) / x[2] < 0.5 for x in self.enemies)
+            if blocked:
                 target = self.px
         if abs(target - self.px) > 4:
             self.px += math.copysign(PLAYER_SPEED * dt, target - self.px)
