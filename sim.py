@@ -13,7 +13,8 @@ def play(level):
     answers = {}
     while not g.over and g.t < 90:
         if g.t - last_ask >= DECIDE_EVERY:
-            r = router.predict(g.state_text(), g.questions(), model="multilingual")
+            mode = "dodge" if g.dodge_needed() else "chase"
+            r = router.predict(g.state_text(mode), g.questions(mode), model="multilingual")
             answers = r["answers"]
             last_ask = g.t
         g.apply(answers, 0.016)

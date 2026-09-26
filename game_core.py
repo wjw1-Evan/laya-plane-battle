@@ -41,65 +41,72 @@ class Game:
         self.decisions = 0
 
     # ---------- 状态 -> 文字(Laya 的输入) ----------
-    def state_text(self):
+    def dodge_needed(self):
+        """客观门控:是否存在即将命中的子弹/敌机(与 apply 的闪避分支同一标准)"""
+        for b in self.ebullets:
+            if b[1] < H - 40 and abs(b[0] - self.px) < 40 and (H - 40 - b[1]) / b[2] < 1.2:
+                return True
+        for e in self.enemies:
+            t_imp = (H - 40 - e[1]) / e[2]
+            if t_imp <= 0 or t_imp >= 1.0:
+                continue
+            x_pred = max(16, min(W - 16, e[0] + (e[3] if len(e) > 3 else 0) * t_imp))
+            if abs(x_pred - self.px) < 50:
+                return True
+        return False
+
+    def state_text(self, mode):
         parts = [f"Player x={self.px:.0f} of {W}. Health {self.hp}/{MAX_HP}."]
-        incoming = [b for b in self.ebullets if b[1] < H - 40]
-        if incoming:
-            im = [x for x in incoming if (H - 40 - x[1]) / x[2] < 1.2]
-            il = sum(1 for x in im if x[0] < self.px)
-            ir = len(im) - il
-            parts.append(f"Bullets about to cross the player's line within ~1s: {il} on the left, {ir} on the right (of {len(incoming)} bullets total, the rest are far away).")
-            b = min(incoming, key=lambda b: (H - 40 - b[1]) / b[2])
-            t_imp = (H - 40 - b[1]) / b[2]
-            side = "left" if b[0] < self.px else "right"
-            parts.append(f"Most imminent bullet: {abs(b[0]-self.px):.0f}px to the {side} of the player, impact in {t_imp:.1f}s.")
-            # 走廊畅通度:向左/向右逃 90px 路径上会撞上的子弹数
-            def corridor(d):
-                cx = max(16, min(W - 16, self.px + d * 90))
-                c = 0
-                for x in incoming:
-                    if x is b: continue
-                    ti = (H - 40 - x[1]) / x[2]
-                    if min(self.px, cx) <= x[0] <= max(self.px, cx) and abs(ti - abs(x[0]-self.px)/240) < 0.3: c += 1
-                    elif abs(x[0]-cx) < 25 and ti < abs(cx-self.px)/240 + 0.5: c += 1
-                return c
-            parts.append(f"Escape corridors: moving left crosses {corridor(-1)} bullet lanes, moving right crosses {corridor(1)} bullet lanes.")
+        if mode == "dodge":
+            incoming = [b for b in self.ebullets if b[1] < H - 40]
+            if incoming:
+                im = [x for x in incoming if (H - 40 - x[1]) / x[2] < 1.2]
+                il = sum(1 for x in im if x[0] < self.px)
+                b = min(incoming, key=lambda x: (H - 40 - x[1]) / x[2])
+                t_imp = (H - 40 - b[1]) / b[2]
+                side = "left" if b[0] < self.px else "right"
+                parts.append(f"Bullets about to cross the player's line within ~1s: {il} on the left, {len(im)-il} on the right (of {len(incoming)} bullets total, the rest are far away).")
+                parts.append(f"Most imminent bullet: {abs(b[0]-self.px):.0f}px to the {side} of the player, impact in {t_imp:.1f}s.")
+            else:
+                parts.append("No enemy bullets on screen.")
         else:
-            parts.append("No enemy bullets on screen.")
-        if self.enemies:
-            e = max(self.enemies, key=lambda x: x[1])
-            side = "to the left" if e[0] < self.px - 12 else ("to the right" if e[0] > self.px + 12 else "almost directly above")
-            parts.append(f"The most urgent enemy ship (deepest): {side}, {e[1]:.0f}px above the player, horizontal offset {abs(e[0]-self.px):.0f}px.")
-        else:
-            parts.append("No enemy ships on screen.")
+            if self.enemies:
+                e = max(self.enemies, key=lambda x: x[1])
+                side = "to the left" if e[0] < self.px - 12 else ("to the right" if e[0] > self.px + 12 else "almost directly above")
+                parts.append(f"The most urgent enemy ship (deepest): {side}, {e[1]:.0f}px above the player, horizontal offset {abs(e[0]-self.px):.0f}px.")
+            else:
+                parts.append("No enemy ships on screen.")
         return " ".join(parts)
 
-    def questions(self):
+    def questions(self, mode):
+        if mode == "dodge":
+            return {
+                "dodge": {
+                    "type": "choice",
+                    "instructions": "Is a bullet about to hit the player?",
+                    "criteria": {
+                        "yes": "a bullet is about to hit the player",
+                        "no":  "no bullet is about to hit the player",
+                    },
+                },
+                "bullet_side": {
+                    "type": "choice",
+                    "instructions": "Which side of the player is the bullet about to hit on?",
+                    "criteria": {
+                        "left":  "the bullet is on the left side of the player",
+                        "right": "the bullet is on the right side of the player",
+                    },
+                },
+                "dodge_dir": {
+                    "type": "choice",
+                    "instructions": "If escaping sideways, which corridor is safer?",
+                    "criteria": {
+                        "left":  "the left corridor crosses fewer bullet lanes",
+                        "right": "the right corridor crosses fewer bullet lanes",
+                    },
+                },
+            }
         return {
-            "dodge": {
-                "type": "choice",
-                "instructions": "Is a bullet about to hit the player?",
-                "criteria": {
-                    "yes": "a bullet is about to hit the player",
-                    "no":  "no bullet is about to hit the player",
-                },
-            },
-            "bullet_side": {
-                "type": "choice",
-                "instructions": "Which side of the player is the bullet about to hit on?",
-                "criteria": {
-                    "left":  "the bullet is on the left side of the player",
-                    "right": "the bullet is on the right side of the player",
-                },
-            },
-            "dodge_dir": {
-                "type": "choice",
-                "instructions": "If escaping sideways, which corridor is safer?",
-                "criteria": {
-                    "left":  "the left corridor crosses fewer bullet lanes",
-                    "right": "the right corridor crosses fewer bullet lanes",
-                },
-            },
             "fire": {
                 "type": "choice",
                 "instructions": "Should the player fire right now?",

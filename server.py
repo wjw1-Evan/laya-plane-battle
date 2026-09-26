@@ -11,7 +11,7 @@ from pathlib import Path
 
 from laya import Router
 
-QUESTIONS = {
+Q_DODGE = {
     "dodge": {
         "type": "choice",
         "instructions": "Is a bullet about to hit the player?",
@@ -36,6 +36,17 @@ QUESTIONS = {
             "right": "the right corridor crosses fewer bullet lanes",
         },
     },
+    "dodge_dir": {
+        "type": "choice",
+        "instructions": "If escaping sideways, which corridor is safer?",
+        "criteria": {
+            "left":  "the left corridor crosses fewer bullet lanes",
+            "right": "the right corridor crosses fewer bullet lanes",
+        },
+    },
+}
+
+Q_CHASE = {
     "fire": {
         "type": "choice",
         "instructions": "Should the player fire right now?",
@@ -54,6 +65,8 @@ QUESTIONS = {
         },
     },
 }
+
+QUESTIONS = {"dodge": Q_DODGE, "chase": Q_CHASE}   # 按需出题:躲弹态 3 问,拦截态 2 问
 
 router = Router()
 router.load("multilingual")   # 游戏只用 multilingual;避免 preload 全量(含未下载的 typed-decisions)
@@ -82,9 +95,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/decide":
             return self._send(404, b"{}", "application/json")
         n = int(self.headers.get("Content-Length", 0))
-        text = json.loads(self.rfile.read(n))["text"]
+        req = json.loads(self.rfile.read(n))
         with _predict_lock:
-            r = router.predict(text, QUESTIONS, model="multilingual")
+            r = router.predict(req["text"], QUESTIONS[req.get("mode", "chase")], model="multilingual")
         out = {"answers": r["answers"]}
         self._send(200, json.dumps(out, ensure_ascii=False).encode())
 

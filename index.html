@@ -51,22 +51,39 @@ function newGame(){ popups=[]; g={t:0,px:W/2,hp:MAX_HP,kills:0,quota:4+levelCur,
   enemies:[],eb:[],pb:[],over:null,ans:{},lat:0,combo:0,comboT:0,buff:0,transition:false}; }
 newGame();
 
-function stateText(){
+// 客观门控:与 applyAnswers 的闪避分支同一标准
+function dodgeGate(){
+  for(const b of g.eb){
+    if(b[1]<H-40 && Math.abs(b[0]-g.px)<40 && (H-40-b[1])/b[2]<1.2) return true;
+  }
+  for(const e of g.enemies){
+    const tImp=(H-40-e[1])/e[2];
+    if(tImp<=0||tImp>=1.0) continue;
+    const xPred=Math.max(16,Math.min(W-16,e[0]+(e[3]||0)*tImp));
+    if(Math.abs(xPred-g.px)<50) return true;
+  }
+  return false;
+}
+
+function stateText(mode){
   const p=[`Player x=${g.px.toFixed(0)} of ${W}. Health ${g.hp}/${MAX_HP}.`];
-  const inc=g.eb.filter(b=>b[1]<H-40);
-  if(inc.length){
-    const im=inc.filter(b=>(H-40-b[1])/b[2]<1.2);
-    const il=im.filter(b=>b[0]<g.px).length, ir=im.length-il;
-    p.push(`Bullets about to cross the player's line within ~1s: ${il} on the left, ${ir} on the right (of ${inc.length} bullets total, the rest are far away).`);
-    const b=inc.reduce((a,x)=>(H-40-x[1])/x[2]<(H-40-a[1])/a[2]?x:a);
-    const tImp=(H-40-b[1])/b[2], s=b[0]<g.px?"left":"right";
-    p.push(`Most imminent bullet: ${Math.abs(b[0]-g.px).toFixed(0)}px to the ${s} of the player, impact in ${tImp.toFixed(1)}s.`);
-  } else p.push("No enemy bullets on screen.");
-  if(g.enemies.length){
-    const e=g.enemies.reduce((a,b)=>b[1]>a[1]?b:a);
-    const s=e[0]<g.px-12?"to the left":(e[0]>g.px+12?"to the right":"almost directly above");
-    p.push(`The most urgent enemy ship (deepest): ${s}, ${e[1].toFixed(0)}px above the player, horizontal offset ${Math.abs(e[0]-g.px).toFixed(0)}px.`);
-  } else p.push("No enemy ships on screen.");
+  if(mode==='dodge'){
+    const inc=g.eb.filter(b=>b[1]<H-40);
+    if(inc.length){
+      const im=inc.filter(b=>(H-40-b[1])/b[2]<1.2);
+      const il=im.filter(b=>b[0]<g.px).length, ir=im.length-il;
+      p.push(`Bullets about to cross the player's line within ~1s: ${il} on the left, ${ir} on the right (of ${inc.length} bullets total, the rest are far away).`);
+      const b=inc.reduce((a,x)=>(H-40-x[1])/x[2]<(H-40-a[1])/a[2]?x:a);
+      const tImp=(H-40-b[1])/b[2], s=b[0]<g.px?"left":"right";
+      p.push(`Most imminent bullet: ${Math.abs(b[0]-g.px).toFixed(0)}px to the ${s} of the player, impact in ${tImp.toFixed(1)}s.`);
+    } else p.push("No enemy bullets on screen.");
+  } else {
+    if(g.enemies.length){
+      const e=g.enemies.reduce((a,b)=>b[1]>a[1]?b:a);
+      const s=e[0]<g.px-12?"to the left":(e[0]>g.px+12?"to the right":"almost directly above");
+      p.push(`The most urgent enemy ship (deepest): ${s}, ${e[1].toFixed(0)}px above the player, horizontal offset ${Math.abs(e[0]-g.px).toFixed(0)}px.`);
+    } else p.push("No enemy ships on screen.");
+  }
   return p.join(" ");
 }
 
@@ -75,8 +92,9 @@ async function decide(){
   inflight=true;
   const t0=performance.now();
   try{
+    const mode = dodgeGate() ? 'dodge' : 'chase';   // 按需出题:躲弹 3 问 / 拦截 2 问
     const r=await fetch('/decide',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({text:stateText()})});
+      body:JSON.stringify({text:stateText(mode), mode})});
     const j=await r.json();
     g.ans=j.answers; g.lat=(performance.now()-t0).toFixed(0);
     renderVerdict();
