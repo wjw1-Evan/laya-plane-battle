@@ -7,7 +7,7 @@ from game_core import Game, MAX_HP
 router = Router()
 DECIDE_EVERY = 0.15          # 决策间隔(秒)
 
-def play(level, verbose=False):
+def play(level):
     g = Game(level=level, seed=level * 100 + int(time.time()) % 1000)
     last_ask = -1
     answers = {}

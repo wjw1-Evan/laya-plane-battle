@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""飞机大战核心逻辑(无头可模拟)+ Laya 决策控制器。
+"""飞机大战核心逻辑(与 index.html 同构,供无头模拟)。
 
-设计:游戏每一拍把战场状态转成文字,交给本地 Laya 模型做结构化决策:
-  - safe_zone  (choice): 左/中/右 哪个横向区域当前最安全 -> 玩家横向移动
-  - fire       (noul)  : 是否开火
-不写死任何躲弹算法,躲弹完全由 Laya 的分类结果驱动。
+设计:游戏每一拍把战场状态转成文字,交给本地 Laya 模型做五项结构化决策
+(dodge / bullet_side / dodge_dir / fire / enemy_side),本模块只做门控与执行:
+空间方位判断交给模型,时间/几何计算交给反射层。
 """
 import math
+import random
 
 W, H = 480, 640
 PLAYER_SPEED = 240          # px/s
@@ -17,18 +17,12 @@ EBULLET_SPD_PER_LV = 8      # 敌弹逐关提速
 ZIGZAG_FROM_LV = 4          # 从第4关起敌机蛇形走位
 FIRE_CD = 0.14
 MAX_HP = 3
-ZONES = ["left", "center", "right"]
-
-
-def zone_of(x):
-    return "left" if x < W / 3 else ("center" if x < 2 * W / 3 else "right")
 
 
 class Game:
     """一个关卡 = 连续 spawn 的敌机;清空配额即通关,HP 归零则失败。"""
 
     def __init__(self, level=1, quota=None, seed=None):
-        import random
         self.rng = random.Random(seed)
         self.level = level
         self.quota = quota or 4 + level          # 需要击落的敌机数

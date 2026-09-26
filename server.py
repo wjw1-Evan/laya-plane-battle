@@ -2,9 +2,10 @@
 """飞机大战 · Laya 控制版 —— 本地决策服务器 + 静态页面。
 
 GET  /       -> index.html
-POST /decide -> {"text": "<战场状态文字>"} -> Laya Router -> 三项判断 JSON
+POST /decide -> {"text": "<战场状态文字>"} -> Laya Router -> 五项判断 JSON
 """
 import json
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -56,7 +57,6 @@ QUESTIONS = {
 
 router = Router()
 router.load("multilingual")   # 游戏只用 multilingual;避免 preload 全量(含未下载的 typed-decisions)
-import threading
 _predict_lock = threading.Lock()   # torch/MPS 不支持并发推理,必须串行
 print("[laya-game] models loaded, serving on http://127.0.0.1:8787")
 
@@ -85,7 +85,7 @@ class Handler(BaseHTTPRequestHandler):
         text = json.loads(self.rfile.read(n))["text"]
         with _predict_lock:
             r = router.predict(text, QUESTIONS, model="multilingual")
-        out = {"answers": r["answers"], "latency_ms": r.get("latency_ms")}
+        out = {"answers": r["answers"]}
         self._send(200, json.dumps(out, ensure_ascii=False).encode())
 
     def log_message(self, *a):
